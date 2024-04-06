@@ -1,0 +1,81 @@
+variables:
+  CHARTS_PATH: /deploy/charts
+
+stages:
+  - tests
+  - build
+  - deploy
+
+.deploy_gke_scripts:
+  stage: deploy
+  image: europe-west3-docker.pkg.dev/prj-landing-zone-6a2b/docker/infra:latest
+  script:
+    - if [[ ! -e "values-gke-${CI_ENVIRONMENT_NAME}.yaml" ]]; then touch "values-gke-${CI_ENVIRONMENT_NAME}.yaml"; fi
+    - helm upgrade --install ${CI_PROJECT_NAME} -n ${K8S_NAMESPACE}
+      --values ${CHARTS_PATH}/${CI_PROJECT_NAME}/values.yaml
+      --values ${CHARTS_PATH}/${CI_PROJECT_NAME}/values-gke-${CI_ENVIRONMENT_NAME}.yaml
+      --values values-gke-${CI_ENVIRONMENT_NAME}.yaml
+      --set image.tag=${CI_COMMIT_REF_SLUG}
+      --set image.repository=europe-west3-docker.pkg.dev/prj-landing-zone-6a2b/docker/questionnaire_assessment/${CI_PROJECT_NAME}
+      --set podAnnotations.commit=${CI_COMMIT_SHA}
+      ${CHARTS_PATH}/${CI_PROJECT_NAME}
+
+placeholder:
+  stage: tests
+  script:
+    - echo "Add proper application test stage"
+  tags:
+    - gke
+
+build-kaniko-gcp:
+  image:
+    name: gcr.io/kaniko-project/executor:v1.17.0-debug
+    entrypoint: ['']
+  stage: build
+  script:
+    - /kaniko/executor
+      --context "${CI_PROJECT_DIR}"
+      --dockerfile "${CI_PROJECT_DIR}/Dockerfile"
+      --destination "europe-west3-docker.pkg.dev/prj-landing-zone-6a2b/docker/questionnaire_assessment/${CI_PROJECT_NAME}:${CI_COMMIT_REF_SLUG}"
+  tags:
+    - gke
+
+deploy:gke:development:
+  extends: .deploy_gke_scripts
+  variables:
+    K8S_NAMESPACE: development
+  environment:
+    name: development
+  when: manual
+  needs: ['build-kaniko-gcp']
+  tags:
+    - gke
+
+deploy:gke:staging:
+  extends: .deploy_gke_scripts
+  variables:
+    K8S_NAMESPACE: staging
+  environment:
+    name: staging
+  when: manual
+  only:
+    - staging
+    - master
+    - tags
+  needs: ['build-kaniko-gcp']
+  tags:
+    - gke
+
+deploy:gke:production:
+  extends: .deploy_gke_scripts
+  variables:
+    K8S_NAMESPACE: production
+  environment:
+    name: production
+  when: manual
+  only:
+    - master
+    - tags
+  needs: ['build-kaniko-gcp', 'deploy:gke:staging']
+  tags:
+    - gke
